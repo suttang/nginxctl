@@ -1,0 +1,131 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+__version__ = '0.0.1'
+
+import sys
+import os
+import commands
+from optparse import OptionParser
+
+NGINX_BIN = '/usr/local/sbin/nginx'
+NGINX_ENV = '/usr/local/etc/nginx'
+NGINX_PID = NGINX_ENV + '/nginx.pid'
+NGINX_CONFIG = NGINX_ENV + '/conf/nginx.conf'
+
+PHPFPM_BIN = '/usr/local/sbin/php-fpm'
+PHPFPM_PID = '/usr/local/Cellar/php/5.3.8/var/run/php-fpm.pid'
+
+class NginxControl():
+	@classmethod
+	def configtest(klass):
+		print 'Checking nginx'
+		(status, output) = commands.getstatusoutput(NGINX_BIN+' -t -c '+NGINX_CONFIG)
+		if int(status) != 0:
+			if 'Permission denied' in output:
+				print "You must execute this command as sudo."
+			else:
+				print status
+				print output
+			return 1
+		else:
+			print output
+			return 0
+	@classmethod
+	def start(klass):
+		try:
+			print 'Running nginx...'
+			if not os.path.isfile(NGINX_PID):
+				(status, output) = commands.getstatusoutput(NGINX_BIN+' -c '+NGINX_CONFIG)
+				if int(status) != 0:
+					if 'Permission denied' in output:
+						raise Exception("You must execute this command as sudo.")
+					else:
+						raise Exception("UnknownErrorOccured: " + output + ':' + status)
+				print 'ok'
+			else:
+				print 'nginx is already running'
+			print 'Running PHP-FPM...'
+			if not os.path.isfile(PHPFPM_PID):
+				(status, output) = commands.getstatusoutput('php-fpm')
+				if int(status) != 0:
+					raise Exception("UnknownErrorOccured: " + output + ':' + status)
+				print 'ok'
+			else:
+				print 'PHP-FPM is already running'
+		except Exception, e:
+			print e
+			return 1
+		return 0
+	@classmethod
+	def stop(klass):
+		try:
+			print 'Stopping nginx...'
+			if os.path.isfile(NGINX_PID):
+				(status, output) = commands.getstatusoutput(NGINX_BIN+' -c '+NGINX_CONFIG+' -s stop')
+				if int(status) != 0:
+					if 'Operation not permitted' in output:
+						raise Exception("You must execute this command as sudo.")
+					else:
+						raise Exception("UnknownErrorOccured: " + output + ':' + status)
+				else:
+					print 'ok'
+			print 'Stopping PHP-FPM...'
+			if os.path.isfile(PHPFPM_PID):
+				(status, output) = commands.getstatusoutput('cat /usr/local/Cellar/php/5.3.8/var/run/php-fpm.pid | xargs kill')
+				if int(status) != 0:
+					raise Exception("UnknownErrorOccured: " + output + ':' + status)
+				else:
+					print 'ok'
+		except Exception, e:
+			print e
+			return 1
+		return 0
+	@classmethod
+	def restart(klass):
+		try:
+			status = klass.stop()
+			if int(status) != 0:
+				raise Exception()
+			else:
+				status = klass.start()
+				if int(status) != 0:
+					raise Exception()
+		except Exception, e:
+			print 'Restart failed.'
+			return 1
+		return 0
+	@classmethod
+	def status(klass):
+		try:
+			# Check nginx PID
+			if not os.path.isfile(NGINX_PID):
+				raise Exception('nginx is not running.')
+			# Check PHP-FPM PID
+			if not os.path.isfile(PHPFPM_PID):
+				raise Exception('PHP-FPM is not running.')
+			print 'OK'
+		except Exception, e:
+			print e
+			return 1
+		return 0
+
+def main():
+	commands = NginxControl
+	usage = "%prog [configtest|start|stop|restart|status]"
+	parser = OptionParser(usage = usage)
+	(options, args) = parser.parse_args(sys.argv)
+	
+	try:
+		if len(sys.argv) <= 0:
+			raise Exception()
+		commandString = sys.argv[1]
+		command = getattr(NginxControl, commandString)
+		if not command:
+			raise Exception()
+		command()
+	except Exception, e:
+		parser.print_help()
+
+
+if ( __name__ == "__main__" ):
+	main()

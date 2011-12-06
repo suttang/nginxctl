@@ -1,0 +1,4 @@
+Usage: nginxctl [configtest|start|stop|restart|status]
+
+Options:
+  -h, --help  show this help message and exit
