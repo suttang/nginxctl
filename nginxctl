@@ -1,131 +1,343 @@
-#!/usr/bin/python
-# -*- coding: utf-8 -*-
-__version__ = '0.0.1'
+#!/usr/bin/env node
 
-import sys
-import os
-import commands
-from optparse import OptionParser
+var BIN_NAME = 'nginxctl';
+var NGINX_BIN = '/usr/local/sbin/nginx';
+var NGINX_ENV = '/usr/local/etc/nginx';
+var NGINX_PID = NGINX_ENV + '/nginx.pid';
+var NGINX_CONFIG = NGINX_ENV + '/conf/nginx.conf';
 
-NGINX_BIN = '/usr/local/sbin/nginx'
-NGINX_ENV = '/usr/local/etc/nginx'
-NGINX_PID = NGINX_ENV + '/nginx.pid'
-NGINX_CONFIG = NGINX_ENV + '/conf/nginx.conf'
+var PHPFPM_BIN = '/usr/local/sbin/php-fpm';
+var PHPFPM_PID = '/usr/local/Cellar/php/5.3.8/var/run/php-fpm.pid';
 
-PHPFPM_BIN = '/usr/local/sbin/php-fpm'
-PHPFPM_PID = '/usr/local/Cellar/php/5.3.8/var/run/php-fpm.pid'
+var sys = require('util');
+var fs = require('fs');
+var exec = require('child_process').exec;
+var optparse = require('optparse');
+var async = require('async');
 
-class NginxControl():
-	@classmethod
-	def configtest(klass):
-		print 'Checking nginx'
-		(status, output) = commands.getstatusoutput(NGINX_BIN+' -t -c '+NGINX_CONFIG)
-		if int(status) != 0:
-			if 'Permission denied' in output:
-				print "You must execute this command as sudo."
-			else:
-				print status
-				print output
-			return 1
-		else:
-			print output
-			return 0
-	@classmethod
-	def start(klass):
-		try:
-			print 'Running nginx...'
-			if not os.path.isfile(NGINX_PID):
-				(status, output) = commands.getstatusoutput(NGINX_BIN+' -c '+NGINX_CONFIG)
-				if int(status) != 0:
-					if 'Permission denied' in output:
-						raise Exception("You must execute this command as sudo.")
-					else:
-						raise Exception("UnknownErrorOccured: " + output + ':' + status)
-				print 'ok'
-			else:
-				print 'nginx is already running'
-			print 'Running PHP-FPM...'
-			if not os.path.isfile(PHPFPM_PID):
-				(status, output) = commands.getstatusoutput('php-fpm')
-				if int(status) != 0:
-					raise Exception("UnknownErrorOccured: " + output + ':' + status)
-				print 'ok'
-			else:
-				print 'PHP-FPM is already running'
-		except Exception, e:
-			print e
-			return 1
-		return 0
-	@classmethod
-	def stop(klass):
-		try:
-			print 'Stopping nginx...'
-			if os.path.isfile(NGINX_PID):
-				(status, output) = commands.getstatusoutput(NGINX_BIN+' -c '+NGINX_CONFIG+' -s stop')
-				if int(status) != 0:
-					if 'Operation not permitted' in output:
-						raise Exception("You must execute this command as sudo.")
-					else:
-						raise Exception("UnknownErrorOccured: " + output + ':' + status)
-				else:
-					print 'ok'
-			print 'Stopping PHP-FPM...'
-			if os.path.isfile(PHPFPM_PID):
-				(status, output) = commands.getstatusoutput('cat /usr/local/Cellar/php/5.3.8/var/run/php-fpm.pid | xargs kill')
-				if int(status) != 0:
-					raise Exception("UnknownErrorOccured: " + output + ':' + status)
-				else:
-					print 'ok'
-		except Exception, e:
-			print e
-			return 1
-		return 0
-	@classmethod
-	def restart(klass):
-		try:
-			status = klass.stop()
-			if int(status) != 0:
-				raise Exception()
-			else:
-				status = klass.start()
-				if int(status) != 0:
-					raise Exception()
-		except Exception, e:
-			print 'Restart failed.'
-			return 1
-		return 0
-	@classmethod
-	def status(klass):
-		try:
-			# Check nginx PID
-			if not os.path.isfile(NGINX_PID):
-				raise Exception('nginx is not running.')
-			# Check PHP-FPM PID
-			if not os.path.isfile(PHPFPM_PID):
-				raise Exception('PHP-FPM is not running.')
-			print 'OK'
-		except Exception, e:
-			print e
-			return 1
-		return 0
+var NginxControl = {
+	start: function(callback) {
+		var nginxPIDFileisExists = null;
+		var phpfpmPIDFileisExists = null;
+		async.series([
+			function(callback) {
+				console.log('Running nginx...');
+				NginxControlUtil.checkNginxPidFileExists(function(result) {
+					nginxPIDFileisExists = result;
+					callback();
+				});
+			},
+			function(callback) {
+				if (nginxPIDFileisExists) { // nginx PID file is exists
+					NginxControlUtil.checkNginxProcess(function(result) {
+						if (result) { // nginx process is running
+							console.log('nginx is already running');
+							callback();
+						} else { // nginx process is not running
+							NginxControlUtil.removeNginxPidFile();
+							NginxControlUtil.startNginx(function() {
+								callback();
+							});
+						}
+					});
+				} else { // Threre is no nginx PID file
+					NginxControlUtil.startNginx(function() {
+						callback();
+					});
+				}
+			},
+			function(callback) {
+				console.log('Running PHP-FPM...');
+				NginxControlUtil.checkPHPFPMPidFileExists(function(result) {
+					phpfpmPIDFileisExists = result;
+					callback();
+				});
+			},
+			function(callback) {
+				if (phpfpmPIDFileisExists) { // PHP-FPM PID file is exists
+					NginxControlUtil.checkPHPFPMProcess(function(result) {
+						if (result) { // PHP-FPM process is running
+							console.log('PHP-FPM is already running');
+							callback();
+						} else { // PGP-FPM process is not running
+							NginxControlUtil.removePHPFPMPidFile();
+							NginxControlUtil.startPHPFPM(function() {
+								callback();
+							});
+						}
+					});
+				} else { // Threre is no PHP-FPM PID file
+					NginxControlUtil.startPHPFPM(function() {
+						callback();
+					});
+				}
+			}
+		], function() {
+			if (callback) callback();
+		});
+	},
+	stop: function(callback) {
+		var nginxPIDFileisExists = null;
+		var phpfpmPIDFileisExists = null;
+		async.series([
+			function(callback) {
+				console.log('Stopping nginx...');
+				NginxControlUtil.checkNginxPidFileExists(function(result) {
+					nginxPIDFileisExists = result;
+					callback();
+				});
+			},
+			function(callback) {
+				if (nginxPIDFileisExists) { // nginx PID file is exists
+					NginxControlUtil.checkNginxProcess(function(result) {
+						if (result) { // nginx process is running
+							NginxControlUtil.stopNginx(function() {
+								callback();
+							});
+						} else { // nginx process is not running
+							console.log('ok');
+							callback();
+						}
+					});
+				} else { // Threre is no nginx PID file
+					console.log('ok');
+					callback();
+				}
+			},
+			function(callback) {
+				console.log('Stopping PHP-FPM...');
+				NginxControlUtil.checkPHPFPMPidFileExists(function(result) {
+					phpfpmPIDFileisExists = result;
+					callback();
+				});
+			},
+			function(callback) {
+				if (phpfpmPIDFileisExists) { // PHP-FPM PID file is exists
+					NginxControlUtil.checkPHPFPMProcess(function(result) {
+						if (result) { // PHP-FPM process is running
+							NginxControlUtil.stopPHPFPM(function() {
+								callback();
+							});
+						} else { // PHP-FPM process is not running
+							console.log('ok');
+							callback();
+						}
+					});
+				} else { // Threre is no PHP-FPM PID file
+					console.log('ok');
+					callback();
+				}
+			}
+		], function() {
+			if (callback) callback();
+		});
+	},
+	restart: function() {
+		async.series([
+			function(callback) {
+				NginxControl.stop(function() {
+					callback();
+				});
+			},
+			function(callback) {
+				NginxControl.start(function() {
+					callback();
+				});
+			}
+		], function() {
+			
+		});
+	},
+	configtest: function() {
+		console.log('Checking nginx...');
+		exec(NGINX_BIN+' -t -c '+NGINX_CONFIG, function(error, stdout, stderr) {
+			if (error === null) {
+				console.log(stderr);
+			} else {
+				if (stderr.indexOf('Permission denied') !== -1) {
+					console.log('You must execute this command as sudo.');
+				} else {
+					console.log('Unknown error occured: ' + stderr);
+				}
+			}
+		});
+	},
+	status: function() {
+		var nginxPIDFileisExists = null;
+		var phpfpmPIDFileisExists = null;
+		async.series([
+			function(callback) {
+				NginxControlUtil.checkNginxPidFileExists(function(result) {
+					nginxPIDFileisExists = result;
+					callback();
+				});
+			},
+			function(callback) {
+				if (nginxPIDFileisExists) { // nginx PID file is exists
+					NginxControlUtil.checkNginxProcess(function(result) {
+						if (result) { // nginx process is running
+							console.log('OK: nginx is running.');
+							callback();
+						} else {  // nginx process is not running
+							console.log('NG: nginx PID file is exists, but nginx is not running.');
+							callback();
+						}
+					});
+				} else { // Threre is no nginx PID file
+					console.log('OK: nginx is not running.');
+					callback();
+				}
+			},
+			function(callback) {
+				NginxControlUtil.checkPHPFPMPidFileExists(function(result) {
+					phpfpmPIDFileisExists = result;
+					callback();
+				});
+			},
+			function(callback) {
+				if (phpfpmPIDFileisExists) { // PHP-FPM PID file is exists
+					NginxControlUtil.checkPHPFPMProcess(function(result) {
+						if (result) { // PHP-FPM process is running
+							console.log('OK: PHP-FPM is running.');
+							callback();
+						} else { // PHP-FPM process is not running
+							console.log('NG: PHP-FPM PID file is exists, but PHP-FPM is not running.');
+							callback();
+						}
+					});
+				} else { // Threre is no PHP-FPM PID file
+					console.log('OK: PHP-FPM is not running.');
+					callback();
+				}
+			}
+		], function() {
+			
+		});
+	}
+};
+var NginxControlUtil = {
+	checkNginxPidFileExists: function(callback) {
+		try {
+			fs.stat(NGINX_PID, function(err, stats) {
+				if (err === null)
+					callback(true);
+				else
+					callback(false);
+			});
+		} catch (e) {
+			callback(false);
+		}
+	},
+	checkNginxProcess: function(callback) {
+		NginxControlUtil.checkNginxPidFileExists(function(result) {
+			if (!result) return callback(false);
+			var pid = fs.readFileSync(NGINX_PID).toString().replace(/\n/, '');
+			var process = exec('kill -0 ' + pid, function(error, stdout, stderr) {
+				if (error !== null)
+					callback(false);
+				else
+					callback(true);
+			});
+		})
+	},
+	checkPHPFPMPidFileExists: function(callback) {
+		try {
+			fs.stat(PHPFPM_PID, function(err, stats) {
+				if (err === null)
+					callback(true);
+				else
+					callback(false);
+			});
+		} catch (e) {
+			callback(false);
+		}
+	},
+	checkPHPFPMProcess: function(callback) {
+		NginxControlUtil.checkPHPFPMPidFileExists(function(result) {
+			if (!result) return callback(false);
+			var pid = fs.readFileSync(PHPFPM_PID).toString().replace(/\n/, '');
+			var process = exec('kill -0 ' + pid, function(error, stdout, stderr) {
+				if (error !== null)
+					callback(false);
+				else
+					callback(true);
+			});
+		});
+	},
+	removeNginxPidFile: function() {
+		return fs.unlinkSync(NGINX_PID);
+	},
+	removePHPFPMPidFile: function() {
+		return fs.unlinkSync(PHPFPM_PID);
+	},
+	startNginx: function(callback) {
+		exec(NGINX_BIN+' -c '+NGINX_CONFIG, function(error, stdout, stderr) {
+			// Some error occured
+			if (error !== null) {
+				if (stderr.indexOf('Permission denied') !== -1) {
+					console.log('You must execute this command as sudo.');
+				} else {
+					console.log('Unknown error occured: ' + stderr);
+				}
+			} else {
+				console.log('ok');
+			}
+			if (callback) callback();
+		});
+	},
+	stopNginx: function(callback) {
+		exec(NGINX_BIN+' -c '+NGINX_CONFIG+' -s stop', function(error, stdout, stderr) {
+			// Some error occured
+			if (error !== null) {
+				if (stderr.indexOf('Permission denied') !== -1) {
+					console.log('You must execute this command as sudo.');
+				} else {
+					console.log('Unknown error occured: ' + stderr);
+				}
+			} else {
+				console.log('ok');
+			}
+			if (callback) callback();
+		});
+	},
+	startPHPFPM: function(callback) {
+		exec(PHPFPM_BIN, function(error, stdout, stderr) {
+			// Some error occured
+			if (error !== null) {
+				console.log('Unknown error occured: ' + stderr);
+			} else {
+				console.log('ok');
+			}
+			if (callback) callback();
+		});
+	},
+	stopPHPFPM: function(callback) {
+		exec('cat ' + PHPFPM_PID + ' | xargs kill', function(error, stdout, stderr) {
+			// Some error occured
+			if (error !== null) {
+				console.log('Unknown error occured: ' + stderr);
+			} else {
+				console.log('ok');
+			}
+			if (callback) callback();
+		});
+	}
+}
 
-def main():
-	commands = NginxControl
-	usage = "%prog [configtest|start|stop|restart|status]"
-	parser = OptionParser(usage = usage)
-	(options, args) = parser.parse_args(sys.argv)
+var switches = [['-h', '--help', "Shows this help section"]];
+var parser = new optparse.OptionParser(switches);
+parser.banner = 'Usage: nginxctl [configtest|start|stop|restart|status]';
+
+parser.on('help', function() {
+	console.log(parser.toString());
 	
-	try:
-		if len(sys.argv) <= 0:
-			raise Exception()
-		commandString = sys.argv[1]
-		command = getattr(NginxControl, commandString)
-		if not command:
-			raise Exception()
-		command()
-	except Exception, e:
-		parser.print_help()
+});
+parser.on(2, function(value) {
+	if (!NginxControl[value] || NginxControl[value].constructor !== Function) {
+		console.log(parser.toString());
+		return;
+	}
+	NginxControl[value]();
+});
 
-
-if ( __name__ == "__main__" ):
-	main()
+parser.parse(process.argv);
